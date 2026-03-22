@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0] - 2024-04-01
+
+### Fixed
+- **Medium** — `generate_cmd` was registered twice under both `generate-cmd` and `generate` due to using `@main.command()` then `main.add_command()`; now uses `@click.command()` + `add_command` only — no duplicate
+- **Low** — `parse_target()` incorrectly parsed IP paths like `192.168.1.1/path` as GitHub org/repo shorthand; added digit-only segment guard
+
+### Changed
+- Version bumped to `1.1.0`
+- README updated with ExploitCraft header and docs link
+
 ## [1.0.0] - 2024-01-01
 
 ### Added

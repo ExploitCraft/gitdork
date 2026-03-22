@@ -1,3 +1,12 @@
+<div align="center">
+
+**[ExploitCraft](https://github.com/ExploitCraft)** · Bangladesh · Building tools that matter
+📄 Full documentation at **[doc.emonpersonal.xyz](http://doc.emonpersonal.xyz/)**
+
+</div>
+
+---
+
 # 🎯 gitdork
 
 > Google, Shodan, and GitHub dork generator. Feed it a repo URL or domain — get ready-to-use dork queries targeting exposed secrets, sensitive files, open directories, and misconfigs. Built for pentesters and bug bounty hunters.
@@ -191,3 +200,12 @@ gitdork generates search queries only — it does not perform any active scannin
 ## License
 
 MIT © [ExploitCraft](https://github.com/ExploitCraft)
+
+---
+
+<div align="center">
+
+**[ExploitCraft](https://github.com/ExploitCraft)** · Bangladesh · Building tools that matter
+📄 Full documentation at **[doc.emonpersonal.xyz](http://doc.emonpersonal.xyz/)**
+
+</div>

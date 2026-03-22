@@ -41,7 +41,13 @@ def parse_target(raw: str) -> Target:
         return Target(raw=raw, domain=domain, org=org, repo=repo)
 
     # org/repo shorthand without URL
-    if "/" in raw and not raw.startswith("http") and "." not in raw.split("/")[0]:
+    first_segment = raw.split("/")[0]
+    if (
+        "/" in raw
+        and not raw.startswith("http")
+        and "." not in first_segment
+        and not first_segment.isdigit()
+    ):
         parts = raw.split("/", 1)
         org, repo = parts[0], parts[1] if len(parts) > 1 else None
         return Target(

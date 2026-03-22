@@ -26,7 +26,7 @@ def _parse_list(ctx, param, value) -> list | None:
 
 
 @click.group()
-@click.version_option(version="1.0.0", prog_name="gitdork")
+@click.version_option(version="1.1.0", prog_name="gitdork")
 def main():
     """
     \b
@@ -47,7 +47,7 @@ def main():
     pass
 
 
-@main.command()
+@click.command()
 @click.argument("target")
 @click.option(
     "--engine", "-e", default=None, callback=_parse_list,

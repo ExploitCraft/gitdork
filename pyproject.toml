@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gitdork"
-version = "1.0.0"
+version = "1.1.0"
 description = "Google, Shodan, and GitHub dork generator for pentesters and bug bounty hunters"
 readme = "README.md"
 license = { text = "MIT" }

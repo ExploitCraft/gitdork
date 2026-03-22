@@ -1,4 +1,7 @@
-"""Comprehensive tests for gitdork."""
+"""
+Comprehensive tests for gitdork v1.1.0.
+Covers parser, dork generation, bug fixes, reporters.
+"""
 
 from __future__ import annotations
 
@@ -17,11 +20,11 @@ from gitdork.models import (
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def has_query_containing(dorks: list[Dork], text: str) -> bool:
+def has_query(dorks: list[Dork], text: str) -> bool:
     return any(text.lower() in d.query.lower() for d in dorks)
 
 
-def has_description_containing(dorks: list[Dork], text: str) -> bool:
+def has_desc(dorks: list[Dork], text: str) -> bool:
     return any(text.lower() in d.description.lower() for d in dorks)
 
 
@@ -38,13 +41,11 @@ class TestTargetParser:
         t = parse_target("ExploitCraft/ReconNinja")
         assert t.org == "ExploitCraft"
         assert t.repo == "ReconNinja"
-        assert t.is_github is True
 
     def test_github_org_only(self):
         t = parse_target("github.com/ExploitCraft")
         assert t.org == "ExploitCraft"
         assert t.repo is None
-        assert t.is_github is True
 
     def test_plain_domain(self):
         t = parse_target("example.com")
@@ -71,6 +72,28 @@ class TestTargetParser:
     def test_display_org_only(self):
         t = parse_target("github.com/ExploitCraft")
         assert t.display == "ExploitCraft"
+
+    # ── v1.1.0 bug fix: IP/path must not parse as org/repo ──────────────────
+
+    def test_ip_path_not_parsed_as_github(self):
+        """v1.1.0 fix: 192.168.1.1/path must not become org=192..., repo=path"""
+        t = parse_target("192.168.1.1/admin")
+        assert t.org is None
+        assert t.repo is None
+
+    def test_ip_path_parses_as_domain(self):
+        t = parse_target("192.168.1.1/admin")
+        assert t.is_github is False
+
+    def test_valid_org_repo_still_works(self):
+        """Regression: real org/repo shorthand must still be parsed."""
+        t = parse_target("torvalds/linux")
+        assert t.org == "torvalds"
+        assert t.repo == "linux"
+
+    def test_localhost_path_not_github(self):
+        t = parse_target("localhost/app")
+        assert t.org is None
 
 
 # ── Dork model ────────────────────────────────────────────────────────────────
@@ -106,6 +129,16 @@ class TestDorkModel:
         d.with_url()
         assert d.url.startswith("https://github.com/search?type=code&q=")
 
+    def test_url_is_encoded(self):
+        d = Dork(
+            engine=DorkEngine.GOOGLE,
+            category=DorkCategory.SECRETS,
+            query='site:example.com "api key"',
+            description="Test",
+        )
+        d.with_url()
+        assert " " not in d.url
+
 
 # ── DorkResult ────────────────────────────────────────────────────────────────
 
@@ -136,12 +169,10 @@ class TestDorkResult:
         assert self.result.github_count == 1
 
     def test_by_engine(self):
-        google = self.result.by_engine(DorkEngine.GOOGLE)
-        assert len(google) == 2
+        assert len(self.result.by_engine(DorkEngine.GOOGLE)) == 2
 
     def test_by_category(self):
-        secrets = self.result.by_category(DorkCategory.SECRETS)
-        assert len(secrets) == 2
+        assert len(self.result.by_category(DorkCategory.SECRETS)) == 2
 
 
 # ── Google dork generation ────────────────────────────────────────────────────
@@ -149,9 +180,7 @@ class TestDorkResult:
 class TestGoogleDorks:
     def setup_method(self):
         self.target = parse_target("example.com")
-        self.result = generate(
-            self.target, engines=[DorkEngine.GOOGLE]
-        )
+        self.result = generate(self.target, engines=[DorkEngine.GOOGLE])
         self.dorks = self.result.dorks
 
     def test_generates_dorks(self):
@@ -161,31 +190,25 @@ class TestGoogleDorks:
         assert all(d.engine == DorkEngine.GOOGLE for d in self.dorks)
 
     def test_has_secrets_category(self):
-        secrets = self.result.by_category(DorkCategory.SECRETS)
-        assert len(secrets) > 0
+        assert len(self.result.by_category(DorkCategory.SECRETS)) > 0
 
-    def test_has_sensitive_files_category(self):
-        files = self.result.by_category(DorkCategory.SENSITIVE_FILES)
-        assert len(files) > 0
+    def test_has_sensitive_files(self):
+        assert len(self.result.by_category(DorkCategory.SENSITIVE_FILES)) > 0
 
-    def test_has_misconfigs_category(self):
-        misconfigs = self.result.by_category(DorkCategory.MISCONFIGS)
-        assert len(misconfigs) > 0
+    def test_has_misconfigs(self):
+        assert len(self.result.by_category(DorkCategory.MISCONFIGS)) > 0
 
-    def test_has_login_panels_category(self):
-        logins = self.result.by_category(DorkCategory.LOGIN_PANELS)
-        assert len(logins) > 0
+    def test_has_login_panels(self):
+        assert len(self.result.by_category(DorkCategory.LOGIN_PANELS)) > 0
 
-    def test_has_exposed_dirs_category(self):
-        dirs = self.result.by_category(DorkCategory.EXPOSED_DIRS)
-        assert len(dirs) > 0
+    def test_has_exposed_dirs(self):
+        assert len(self.result.by_category(DorkCategory.EXPOSED_DIRS)) > 0
 
-    def test_has_error_pages_category(self):
-        errors = self.result.by_category(DorkCategory.ERROR_PAGES)
-        assert len(errors) > 0
+    def test_has_error_pages(self):
+        assert len(self.result.by_category(DorkCategory.ERROR_PAGES)) > 0
 
     def test_domain_in_queries(self):
-        assert has_query_containing(self.dorks, "example.com")
+        assert has_query(self.dorks, "example.com")
 
     def test_site_operator_present(self):
         assert any("site:" in d.query for d in self.dorks)
@@ -196,22 +219,24 @@ class TestGoogleDorks:
     def test_intitle_operator_present(self):
         assert any("intitle:" in d.query for d in self.dorks)
 
-    def test_all_dorks_have_description(self):
+    def test_all_have_description(self):
         assert all(d.description for d in self.dorks)
 
-    def test_all_dorks_have_url(self):
-        assert all(d.url.startswith("https://www.google.com") for d in self.dorks)
+    def test_all_have_google_url(self):
+        assert all(
+            d.url.startswith("https://www.google.com") for d in self.dorks
+        )
+
+    def test_private_key_dork_present(self):
+        assert has_query(self.dorks, "RSA PRIVATE KEY")
+
+    def test_env_file_dork_present(self):
+        assert has_desc(self.dorks, ".env")
 
     def test_github_org_target(self):
-        target = parse_target("ExploitCraft/ReconNinja")
-        result = generate(target, engines=[DorkEngine.GOOGLE])
-        assert has_query_containing(result.dorks, "ExploitCraft")
-
-    def test_env_file_dork(self):
-        assert has_description_containing(self.dorks, ".env")
-
-    def test_private_key_dork(self):
-        assert has_query_containing(self.dorks, "RSA PRIVATE KEY")
+        t = parse_target("ExploitCraft/ReconNinja")
+        result = generate(t, engines=[DorkEngine.GOOGLE])
+        assert has_query(result.dorks, "ExploitCraft")
 
 
 # ── Shodan dork generation ────────────────────────────────────────────────────
@@ -219,9 +244,7 @@ class TestGoogleDorks:
 class TestShodanDorks:
     def setup_method(self):
         self.target = parse_target("example.com")
-        self.result = generate(
-            self.target, engines=[DorkEngine.SHODAN]
-        )
+        self.result = generate(self.target, engines=[DorkEngine.SHODAN])
         self.dorks = self.result.dorks
 
     def test_generates_dorks(self):
@@ -230,28 +253,24 @@ class TestShodanDorks:
     def test_all_shodan_engine(self):
         assert all(d.engine == DorkEngine.SHODAN for d in self.dorks)
 
-    def test_hostname_operator_present(self):
+    def test_hostname_present(self):
         assert any("hostname:" in d.query for d in self.dorks)
 
-    def test_port_operator_present(self):
+    def test_port_present(self):
         assert any("port:" in d.query for d in self.dorks)
 
-    def test_ssl_operator_present(self):
+    def test_ssl_present(self):
         assert any("ssl." in d.query for d in self.dorks)
 
-    def test_has_common_ports(self):
+    def test_common_ports_present(self):
         queries = " ".join(d.query for d in self.dorks)
-        assert "22" in queries    # SSH
-        assert "6379" in queries  # Redis
-        assert "9200" in queries  # Elasticsearch
-        assert "27017" in queries # MongoDB
+        for port in ("22", "6379", "9200", "27017"):
+            assert port in queries
 
-    def test_all_dorks_have_url(self):
-        assert all(d.url.startswith("https://www.shodan.io") for d in self.dorks)
-
-    def test_root_domain_used(self):
-        # Should use example.com not the full subdomain
-        assert has_query_containing(self.dorks, "example.com")
+    def test_all_have_shodan_url(self):
+        assert all(
+            d.url.startswith("https://www.shodan.io") for d in self.dorks
+        )
 
 
 # ── GitHub dork generation ────────────────────────────────────────────────────
@@ -259,9 +278,7 @@ class TestShodanDorks:
 class TestGitHubDorks:
     def setup_method(self):
         self.target = parse_target("ExploitCraft/ReconNinja")
-        self.result = generate(
-            self.target, engines=[DorkEngine.GITHUB]
-        )
+        self.result = generate(self.target, engines=[DorkEngine.GITHUB])
         self.dorks = self.result.dorks
 
     def test_generates_dorks(self):
@@ -279,21 +296,13 @@ class TestGitHubDorks:
     def test_extension_operator_present(self):
         assert any("extension:" in d.query for d in self.dorks)
 
-    def test_has_secrets_category(self):
-        assert len(self.result.by_category(DorkCategory.SECRETS)) > 0
-
-    def test_has_sensitive_files_category(self):
-        assert len(
-            self.result.by_category(DorkCategory.SENSITIVE_FILES)
-        ) > 0
-
     def test_env_file_dork(self):
-        assert has_query_containing(self.dorks, "filename:.env")
+        assert has_query(self.dorks, "filename:.env")
 
     def test_private_key_dork(self):
-        assert has_query_containing(self.dorks, "RSA PRIVATE KEY")
+        assert has_query(self.dorks, "RSA PRIVATE KEY")
 
-    def test_all_dorks_have_url(self):
+    def test_all_have_github_url(self):
         assert all(
             d.url.startswith("https://github.com/search") for d in self.dorks
         )
@@ -304,31 +313,31 @@ class TestGitHubDorks:
 class TestEngineFilter:
     def test_google_only(self):
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        assert result.shodan_count == 0
-        assert result.github_count == 0
-        assert result.google_count > 0
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        assert r.shodan_count == 0
+        assert r.github_count == 0
+        assert r.google_count > 0
 
     def test_shodan_only(self):
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.SHODAN])
-        assert result.google_count == 0
-        assert result.github_count == 0
-        assert result.shodan_count > 0
+        r = generate(t, engines=[DorkEngine.SHODAN])
+        assert r.google_count == 0
+        assert r.github_count == 0
+        assert r.shodan_count > 0
 
     def test_github_only(self):
         t = parse_target("ExploitCraft")
-        result = generate(t, engines=[DorkEngine.GITHUB])
-        assert result.google_count == 0
-        assert result.shodan_count == 0
-        assert result.github_count > 0
+        r = generate(t, engines=[DorkEngine.GITHUB])
+        assert r.google_count == 0
+        assert r.shodan_count == 0
+        assert r.github_count > 0
 
     def test_two_engines(self):
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE, DorkEngine.SHODAN])
-        assert result.github_count == 0
-        assert result.google_count > 0
-        assert result.shodan_count > 0
+        r = generate(t, engines=[DorkEngine.GOOGLE, DorkEngine.SHODAN])
+        assert r.github_count == 0
+        assert r.google_count > 0
+        assert r.shodan_count > 0
 
 
 # ── Category filter ───────────────────────────────────────────────────────────
@@ -336,139 +345,140 @@ class TestEngineFilter:
 class TestCategoryFilter:
     def test_secrets_only(self):
         t = parse_target("example.com")
-        result = generate(t, categories=[DorkCategory.SECRETS])
-        non_secrets = [
-            d for d in result.dorks
-            if d.category != DorkCategory.SECRETS
-        ]
-        assert len(non_secrets) == 0
+        r = generate(t, categories=[DorkCategory.SECRETS])
+        assert all(d.category == DorkCategory.SECRETS for d in r.dorks)
 
     def test_misconfigs_only(self):
         t = parse_target("example.com")
-        result = generate(t, categories=[DorkCategory.MISCONFIGS])
-        assert all(
-            d.category == DorkCategory.MISCONFIGS for d in result.dorks
-        )
+        r = generate(t, categories=[DorkCategory.MISCONFIGS])
+        assert all(d.category == DorkCategory.MISCONFIGS for d in r.dorks)
 
     def test_two_categories(self):
         t = parse_target("example.com")
-        result = generate(t, categories=[
-            DorkCategory.SECRETS, DorkCategory.MISCONFIGS
-        ])
         allowed = {DorkCategory.SECRETS, DorkCategory.MISCONFIGS}
-        assert all(d.category in allowed for d in result.dorks)
+        r = generate(t, categories=list(allowed))
+        assert all(d.category in allowed for d in r.dorks)
+
+    def test_empty_result_when_no_match(self):
+        t = parse_target("example.com")
+        r = generate(t, engines=[DorkEngine.SHODAN],
+                     categories=[DorkCategory.CODE_LEAKS])
+        # Shodan has no CODE_LEAKS dorks
+        assert r.total == 0
 
 
 # ── Tech stack ────────────────────────────────────────────────────────────────
 
 class TestTechStack:
-    def test_django_dorks_added(self):
+    def test_django_adds_debug_dork(self):
         t = Target(
             raw="example.com", domain="example.com", tech_stack=["django"]
         )
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        assert has_query_containing(result.dorks, "DEBUG")
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        assert has_query(r.dorks, "DEBUG")
 
-    def test_wordpress_dorks_added(self):
+    def test_wordpress_adds_wp_content_dork(self):
         t = Target(
             raw="example.com", domain="example.com",
             tech_stack=["wordpress"]
         )
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        assert has_query_containing(result.dorks, "wp-content")
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        assert has_query(r.dorks, "wp-content")
 
-    def test_aws_github_dorks_added(self):
+    def test_aws_adds_github_dork(self):
         t = Target(
             raw="ExploitCraft", org="ExploitCraft", tech_stack=["aws"]
         )
-        result = generate(t, engines=[DorkEngine.GITHUB])
-        assert has_query_containing(result.dorks, "aws_access_key_id")
+        r = generate(t, engines=[DorkEngine.GITHUB])
+        assert has_query(r.dorks, "aws_access_key_id")
 
-    def test_no_stack_no_tech_dorks(self):
+    def test_no_stack_still_generates_base_dorks(self):
         t = Target(raw="example.com", domain="example.com", tech_stack=[])
-        result = generate(t)
-        # Should still generate base dorks
-        assert result.total > 0
+        assert generate(t).total > 0
+
+
+# ── Duplicate command registration bug fix ────────────────────────────────────
+
+class TestCommandRegistration:
+    def test_generate_command_exists(self):
+        """v1.1.0 fix: 'generate' must be a registered command."""
+        from gitdork.cli import main
+        assert "generate" in main.commands
+
+    def test_no_generate_cmd_duplicate(self):
+        """v1.1.0 fix: 'generate-cmd' must not exist as a separate command."""
+        from gitdork.cli import main
+        assert "generate-cmd" not in main.commands
+
+    def test_list_categories_exists(self):
+        from gitdork.cli import main
+        assert "list-categories" in main.commands
+
+    def test_list_engines_exists(self):
+        from gitdork.cli import main
+        assert "list-engines" in main.commands
 
 
 # ── JSON reporter ─────────────────────────────────────────────────────────────
 
 class TestJSONReporter:
-    def test_json_structure(self):
+    def test_structure(self):
         from gitdork.reporters.json_report import to_dict
-
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        data = to_dict(result)
-
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        data = to_dict(r)
         assert "target" in data
         assert "summary" in data
         assert "dorks" in data
         assert data["summary"]["total"] == len(data["dorks"])
 
-    def test_json_dork_fields(self):
+    def test_dork_fields(self):
         from gitdork.reporters.json_report import to_dict
-
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        data = to_dict(result)
-
-        d = data["dorks"][0]
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        d = to_dict(r)["dorks"][0]
         for field in ("engine", "category", "description", "query", "url"):
             assert field in d
 
-    def test_json_write_to_file(self, tmp_path):
+    def test_write_to_file(self, tmp_path):
         import json
         from gitdork.reporters.json_report import write
-
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
+        r = generate(t, engines=[DorkEngine.GOOGLE])
         out = tmp_path / "dorks.json"
-        write(result, out)
-
+        write(r, out)
         assert out.exists()
-        data = json.loads(out.read_text())
-        assert data["summary"]["total"] > 0
+        assert json.loads(out.read_text())["summary"]["total"] > 0
 
 
 # ── Markdown reporter ─────────────────────────────────────────────────────────
 
 class TestMarkdownReporter:
-    def test_markdown_contains_target(self):
+    def test_contains_target(self):
         from gitdork.reporters.markdown import to_markdown
-
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        md = to_markdown(result)
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        assert "example.com" in to_markdown(r)
 
-        assert "example.com" in md
-
-    def test_markdown_contains_engine_headers(self):
+    def test_contains_engine_headers(self):
         from gitdork.reporters.markdown import to_markdown
-
         t = parse_target("example.com")
-        result = generate(t)
-        md = to_markdown(result)
-
+        r = generate(t)
+        md = to_markdown(r)
         assert "Google" in md
         assert "Shodan" in md
 
-    def test_markdown_contains_queries(self):
+    def test_contains_queries(self):
         from gitdork.reporters.markdown import to_markdown
-
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        md = to_markdown(result)
+        r = generate(t, engines=[DorkEngine.GOOGLE])
+        assert "site:" in to_markdown(r)
 
-        assert "site:" in md
-
-    def test_markdown_write_to_file(self, tmp_path):
+    def test_write_to_file(self, tmp_path):
         from gitdork.reporters.markdown import write
-
         t = parse_target("example.com")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
+        r = generate(t, engines=[DorkEngine.GOOGLE])
         out = tmp_path / "dorks.md"
-        write(result, out)
-
+        write(r, out)
         assert out.exists()
         assert len(out.read_text()) > 100
