@@ -1,484 +1,391 @@
 """
-Comprehensive tests for gitdork v1.1.0.
-Covers parser, dork generation, bug fixes, reporters.
+Comprehensive tests for wifi-passview v1.1.0.
+Covers models, Linux parser, platform dispatch, reporters, and bug fixes.
 """
 
 from __future__ import annotations
 
+import json
+import textwrap
+from pathlib import Path
+
 import pytest
+import sys
 
-from gitdork.dork_engine import generate
-from gitdork.extractor import parse_target
-from gitdork.models import (
-    Dork,
-    DorkCategory,
-    DorkEngine,
-    DorkResult,
-    Target,
-)
+from wifi_passview.models import ScanResult, WifiProfile
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── WifiProfile ───────────────────────────────────────────────────────────────
 
-def has_query(dorks: list[Dork], text: str) -> bool:
-    return any(text.lower() in d.query.lower() for d in dorks)
+class TestWifiProfile:
+    def test_has_password_true(self):
+        assert WifiProfile(ssid="Net", password="secret").has_password is True
 
+    def test_has_password_false_none(self):
+        assert WifiProfile(ssid="Net").has_password is False
 
-def has_desc(dorks: list[Dork], text: str) -> bool:
-    return any(text.lower() in d.description.lower() for d in dorks)
+    def test_has_password_false_empty(self):
+        assert WifiProfile(ssid="Net", password="").has_password is False
 
+    def test_redact_long(self):
+        p = WifiProfile(ssid="Net", password="mysecretpass")
+        r = p.redact()
+        assert r.password.startswith("my")
+        assert r.password.endswith("ss")
+        assert "***" in r.password
 
-# ── Target parser ─────────────────────────────────────────────────────────────
+    def test_redact_short(self):
+        r = WifiProfile(ssid="Net", password="ab").redact()
+        assert r.password == "****"
 
-class TestTargetParser:
-    def test_github_full_url(self):
-        t = parse_target("https://github.com/ExploitCraft/ReconNinja")
-        assert t.org == "ExploitCraft"
-        assert t.repo == "ReconNinja"
-        assert t.is_github is True
+    def test_redact_none(self):
+        assert WifiProfile(ssid="Net").redact().password is None
 
-    def test_github_shorthand(self):
-        t = parse_target("ExploitCraft/ReconNinja")
-        assert t.org == "ExploitCraft"
-        assert t.repo == "ReconNinja"
+    def test_redact_preserves_original(self):
+        p = WifiProfile(ssid="Net", password="original")
+        p.redact()
+        assert p.password == "original"
 
-    def test_github_org_only(self):
-        t = parse_target("github.com/ExploitCraft")
-        assert t.org == "ExploitCraft"
-        assert t.repo is None
+    def test_redact_preserves_ssid(self):
+        p = WifiProfile(ssid="MyNet", password="pass1234")
+        assert p.redact().ssid == "MyNet"
 
-    def test_plain_domain(self):
-        t = parse_target("example.com")
-        assert t.domain == "example.com"
-        assert t.org is None
-        assert t.is_github is False
+    def test_redact_exactly_5_chars(self):
+        r = WifiProfile(ssid="Net", password="abcde").redact()
+        assert r.password.startswith("ab")
+        assert r.password.endswith("de")
 
-    def test_domain_with_http(self):
-        t = parse_target("https://example.com")
-        assert t.domain == "example.com"
-
-    def test_domain_with_subdomain(self):
-        t = parse_target("api.example.com")
-        assert t.domain == "api.example.com"
-
-    def test_display_github_full(self):
-        t = parse_target("ExploitCraft/ReconNinja")
-        assert t.display == "ExploitCraft/ReconNinja"
-
-    def test_display_domain(self):
-        t = parse_target("example.com")
-        assert t.display == "example.com"
-
-    def test_display_org_only(self):
-        t = parse_target("github.com/ExploitCraft")
-        assert t.display == "ExploitCraft"
-
-    # ── v1.1.0 bug fix: IP/path must not parse as org/repo ──────────────────
-
-    def test_ip_path_not_parsed_as_github(self):
-        """v1.1.0 fix: 192.168.1.1/path must not become org=192..., repo=path"""
-        t = parse_target("192.168.1.1/admin")
-        assert t.org is None
-        assert t.repo is None
-
-    def test_ip_path_parses_as_domain(self):
-        t = parse_target("192.168.1.1/admin")
-        assert t.is_github is False
-
-    def test_valid_org_repo_still_works(self):
-        """Regression: real org/repo shorthand must still be parsed."""
-        t = parse_target("torvalds/linux")
-        assert t.org == "torvalds"
-        assert t.repo == "linux"
-
-    def test_localhost_path_not_github(self):
-        t = parse_target("localhost/app")
-        assert t.org is None
+    def test_fields_default_none(self):
+        p = WifiProfile(ssid="X")
+        assert p.auth_type is None
+        assert p.band is None
+        assert p.auto_connect is None
+        assert p.last_connected is None
+        assert p.interface is None
 
 
-# ── Dork model ────────────────────────────────────────────────────────────────
+# ── ScanResult ────────────────────────────────────────────────────────────────
 
-class TestDorkModel:
-    def test_with_url_google(self):
-        d = Dork(
-            engine=DorkEngine.GOOGLE,
-            category=DorkCategory.SECRETS,
-            query='site:github.com "api_key"',
-            description="Test",
-        )
-        d.with_url()
-        assert d.url.startswith("https://www.google.com/search?q=")
-
-    def test_with_url_shodan(self):
-        d = Dork(
-            engine=DorkEngine.SHODAN,
-            category=DorkCategory.MISCONFIGS,
-            query='hostname:"example.com" port:22',
-            description="Test",
-        )
-        d.with_url()
-        assert d.url.startswith("https://www.shodan.io/search?query=")
-
-    def test_with_url_github(self):
-        d = Dork(
-            engine=DorkEngine.GITHUB,
-            category=DorkCategory.SECRETS,
-            query='org:ExploitCraft "api_key"',
-            description="Test",
-        )
-        d.with_url()
-        assert d.url.startswith("https://github.com/search?type=code&q=")
-
-    def test_url_is_encoded(self):
-        d = Dork(
-            engine=DorkEngine.GOOGLE,
-            category=DorkCategory.SECRETS,
-            query='site:example.com "api key"',
-            description="Test",
-        )
-        d.with_url()
-        assert " " not in d.url
-
-
-# ── DorkResult ────────────────────────────────────────────────────────────────
-
-class TestDorkResult:
-    def setup_method(self):
-        target = Target(raw="example.com", domain="example.com")
-        self.result = DorkResult(target=target, dorks=[
-            Dork(DorkEngine.GOOGLE, DorkCategory.SECRETS,
-                 'site:example.com secret', "Google secret"),
-            Dork(DorkEngine.GOOGLE, DorkCategory.MISCONFIGS,
-                 'site:example.com admin', "Google admin"),
-            Dork(DorkEngine.SHODAN, DorkCategory.MISCONFIGS,
-                 'hostname:"example.com" port:22', "Shodan SSH"),
-            Dork(DorkEngine.GITHUB, DorkCategory.SECRETS,
-                 'org:example "api_key"', "GitHub key"),
+class TestScanResult:
+    def _make(self, *passwords):
+        return ScanResult(profiles=[
+            WifiProfile(ssid=f"Net{i}", password=p)
+            for i, p in enumerate(passwords)
         ])
 
     def test_total(self):
-        assert self.result.total == 4
+        assert self._make("p1", None, "p3").total == 3
 
-    def test_google_count(self):
-        assert self.result.google_count == 2
+    def test_with_password(self):
+        assert self._make("p1", None, "p3").with_password == 2
 
-    def test_shodan_count(self):
-        assert self.result.shodan_count == 1
+    def test_without_password(self):
+        assert self._make("p1", None, "p3").without_password == 1
 
-    def test_github_count(self):
-        assert self.result.github_count == 1
-
-    def test_by_engine(self):
-        assert len(self.result.by_engine(DorkEngine.GOOGLE)) == 2
-
-    def test_by_category(self):
-        assert len(self.result.by_category(DorkCategory.SECRETS)) == 2
-
-
-# ── Google dork generation ────────────────────────────────────────────────────
-
-class TestGoogleDorks:
-    def setup_method(self):
-        self.target = parse_target("example.com")
-        self.result = generate(self.target, engines=[DorkEngine.GOOGLE])
-        self.dorks = self.result.dorks
-
-    def test_generates_dorks(self):
-        assert len(self.dorks) > 0
-
-    def test_all_google_engine(self):
-        assert all(d.engine == DorkEngine.GOOGLE for d in self.dorks)
-
-    def test_has_secrets_category(self):
-        assert len(self.result.by_category(DorkCategory.SECRETS)) > 0
-
-    def test_has_sensitive_files(self):
-        assert len(self.result.by_category(DorkCategory.SENSITIVE_FILES)) > 0
-
-    def test_has_misconfigs(self):
-        assert len(self.result.by_category(DorkCategory.MISCONFIGS)) > 0
-
-    def test_has_login_panels(self):
-        assert len(self.result.by_category(DorkCategory.LOGIN_PANELS)) > 0
-
-    def test_has_exposed_dirs(self):
-        assert len(self.result.by_category(DorkCategory.EXPOSED_DIRS)) > 0
-
-    def test_has_error_pages(self):
-        assert len(self.result.by_category(DorkCategory.ERROR_PAGES)) > 0
-
-    def test_domain_in_queries(self):
-        assert has_query(self.dorks, "example.com")
-
-    def test_site_operator_present(self):
-        assert any("site:" in d.query for d in self.dorks)
-
-    def test_filetype_operator_present(self):
-        assert any("filetype:" in d.query for d in self.dorks)
-
-    def test_intitle_operator_present(self):
-        assert any("intitle:" in d.query for d in self.dorks)
-
-    def test_all_have_description(self):
-        assert all(d.description for d in self.dorks)
-
-    def test_all_have_google_url(self):
-        assert all(
-            d.url.startswith("https://www.google.com") for d in self.dorks
-        )
-
-    def test_private_key_dork_present(self):
-        assert has_query(self.dorks, "RSA PRIVATE KEY")
-
-    def test_env_file_dork_present(self):
-        assert has_desc(self.dorks, ".env")
-
-    def test_github_org_target(self):
-        t = parse_target("ExploitCraft/ReconNinja")
-        result = generate(t, engines=[DorkEngine.GOOGLE])
-        assert has_query(result.dorks, "ExploitCraft")
-
-
-# ── Shodan dork generation ────────────────────────────────────────────────────
-
-class TestShodanDorks:
-    def setup_method(self):
-        self.target = parse_target("example.com")
-        self.result = generate(self.target, engines=[DorkEngine.SHODAN])
-        self.dorks = self.result.dorks
-
-    def test_generates_dorks(self):
-        assert len(self.dorks) > 0
-
-    def test_all_shodan_engine(self):
-        assert all(d.engine == DorkEngine.SHODAN for d in self.dorks)
-
-    def test_hostname_present(self):
-        assert any("hostname:" in d.query for d in self.dorks)
-
-    def test_port_present(self):
-        assert any("port:" in d.query for d in self.dorks)
-
-    def test_ssl_present(self):
-        assert any("ssl." in d.query for d in self.dorks)
-
-    def test_common_ports_present(self):
-        queries = " ".join(d.query for d in self.dorks)
-        for port in ("22", "6379", "9200", "27017"):
-            assert port in queries
-
-    def test_all_have_shodan_url(self):
-        assert all(
-            d.url.startswith("https://www.shodan.io") for d in self.dorks
-        )
-
-
-# ── GitHub dork generation ────────────────────────────────────────────────────
-
-class TestGitHubDorks:
-    def setup_method(self):
-        self.target = parse_target("ExploitCraft/ReconNinja")
-        self.result = generate(self.target, engines=[DorkEngine.GITHUB])
-        self.dorks = self.result.dorks
-
-    def test_generates_dorks(self):
-        assert len(self.dorks) > 0
-
-    def test_all_github_engine(self):
-        assert all(d.engine == DorkEngine.GITHUB for d in self.dorks)
-
-    def test_org_operator_present(self):
-        assert any("org:" in d.query for d in self.dorks)
-
-    def test_filename_operator_present(self):
-        assert any("filename:" in d.query for d in self.dorks)
-
-    def test_extension_operator_present(self):
-        assert any("extension:" in d.query for d in self.dorks)
-
-    def test_env_file_dork(self):
-        assert has_query(self.dorks, "filename:.env")
-
-    def test_private_key_dork(self):
-        assert has_query(self.dorks, "RSA PRIVATE KEY")
-
-    def test_all_have_github_url(self):
-        assert all(
-            d.url.startswith("https://github.com/search") for d in self.dorks
-        )
-
-
-# ── Engine filter ─────────────────────────────────────────────────────────────
-
-class TestEngineFilter:
-    def test_google_only(self):
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        assert r.shodan_count == 0
-        assert r.github_count == 0
-        assert r.google_count > 0
-
-    def test_shodan_only(self):
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.SHODAN])
-        assert r.google_count == 0
-        assert r.github_count == 0
-        assert r.shodan_count > 0
-
-    def test_github_only(self):
-        t = parse_target("ExploitCraft")
-        r = generate(t, engines=[DorkEngine.GITHUB])
-        assert r.google_count == 0
-        assert r.shodan_count == 0
-        assert r.github_count > 0
-
-    def test_two_engines(self):
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE, DorkEngine.SHODAN])
-        assert r.github_count == 0
-        assert r.google_count > 0
-        assert r.shodan_count > 0
-
-
-# ── Category filter ───────────────────────────────────────────────────────────
-
-class TestCategoryFilter:
-    def test_secrets_only(self):
-        t = parse_target("example.com")
-        r = generate(t, categories=[DorkCategory.SECRETS])
-        assert all(d.category == DorkCategory.SECRETS for d in r.dorks)
-
-    def test_misconfigs_only(self):
-        t = parse_target("example.com")
-        r = generate(t, categories=[DorkCategory.MISCONFIGS])
-        assert all(d.category == DorkCategory.MISCONFIGS for d in r.dorks)
-
-    def test_two_categories(self):
-        t = parse_target("example.com")
-        allowed = {DorkCategory.SECRETS, DorkCategory.MISCONFIGS}
-        r = generate(t, categories=list(allowed))
-        assert all(d.category in allowed for d in r.dorks)
-
-    def test_empty_result_when_no_match(self):
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.SHODAN],
-                     categories=[DorkCategory.CODE_LEAKS])
-        # Shodan has no CODE_LEAKS dorks
+    def test_empty(self):
+        r = ScanResult()
         assert r.total == 0
+        assert r.with_password == 0
+        assert r.without_password == 0
+
+    def test_errors_default_empty(self):
+        assert ScanResult().errors == []
 
 
-# ── Tech stack ────────────────────────────────────────────────────────────────
+# ── Linux: NetworkManager parser ──────────────────────────────────────────────
 
-class TestTechStack:
-    def test_django_adds_debug_dork(self):
-        t = Target(
-            raw="example.com", domain="example.com", tech_stack=["django"]
-        )
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        assert has_query(r.dorks, "DEBUG")
+class TestLinuxNMParser:
+    def test_basic_wpa(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "Home.nmconnection"
+        conf.write_text(textwrap.dedent("""
+            [connection]
+            id=Home
+            type=wifi
+            autoconnect=yes
 
-    def test_wordpress_adds_wp_content_dork(self):
-        t = Target(
-            raw="example.com", domain="example.com",
-            tech_stack=["wordpress"]
-        )
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        assert has_query(r.dorks, "wp-content")
+            [wifi]
+            ssid=HomeNetwork
 
-    def test_aws_adds_github_dork(self):
-        t = Target(
-            raw="ExploitCraft", org="ExploitCraft", tech_stack=["aws"]
-        )
-        r = generate(t, engines=[DorkEngine.GITHUB])
-        assert has_query(r.dorks, "aws_access_key_id")
+            [wifi-security]
+            key-mgmt=wpa-psk
+            psk=supersecret123
+        """))
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert len(result.profiles) == 1
+        assert result.profiles[0].ssid == "HomeNetwork"
+        assert result.profiles[0].password == "supersecret123"
+        assert result.profiles[0].auth_type == "wpa-psk"
+        assert result.profiles[0].auto_connect is True
 
-    def test_no_stack_still_generates_base_dorks(self):
-        t = Target(raw="example.com", domain="example.com", tech_stack=[])
-        assert generate(t).total > 0
+    def test_autoconnect_no(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "Net.nmconnection"
+        conf.write_text(textwrap.dedent("""
+            [connection]
+            id=Net
+            type=wifi
+            autoconnect=no
+
+            [wifi]
+            ssid=TestNet
+        """))
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert result.profiles[0].auto_connect is False
+
+    def test_no_wifi_section_skipped(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "vpn.nmconnection"
+        conf.write_text("[connection]\nid=VPN\ntype=vpn\n")
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert len(result.profiles) == 0
+
+    def test_no_ssid_skipped(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "nosid.nmconnection"
+        conf.write_text("[wifi]\nmode=infrastructure\n")
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert len(result.profiles) == 0
+
+    def test_open_network_no_password(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "open.nmconnection"
+        conf.write_text(textwrap.dedent("""
+            [wifi]
+            ssid=OpenCafe
+        """))
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert result.profiles[0].password is None
+
+    def test_quoted_ssid_stripped(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "q.nmconnection"
+        conf.write_text('[wifi]\nssid="QuotedName"\n')
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert result.profiles[0].ssid == "QuotedName"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod not supported on Windows")
+    def test_permission_denied_adds_error(self, tmp_path):
+        from wifi_passview.platforms.linux import _parse_nm_file
+        conf = tmp_path / "secret.nmconnection"
+        conf.write_text("[wifi]\nssid=X\n")
+        conf.chmod(0o000)
+        result = ScanResult(platform="linux")
+        _parse_nm_file(conf, result)
+        assert len(result.profiles) == 0
+        assert any("Permission denied" in e for e in result.errors)
+        conf.chmod(0o644)  # restore for cleanup
 
 
-# ── Duplicate command registration bug fix ────────────────────────────────────
+# ── Linux: wpa_supplicant parser ──────────────────────────────────────────────
 
-class TestCommandRegistration:
-    def test_generate_command_exists(self):
-        """v1.1.0 fix: 'generate' must be a registered command."""
-        from gitdork.cli import main
-        assert "generate" in main.commands
+class TestLinuxWPAParser:
+    def test_basic_wpa_network(self, tmp_path):
+        from wifi_passview.platforms import linux
+        conf = tmp_path / "wpa_supplicant.conf"
+        conf.write_text(textwrap.dedent("""
+            network={
+                ssid="CoffeeShop"
+                psk="latteplease"
+                key_mgmt=WPA-PSK
+            }
+        """))
+        original = linux.WPA_SUPPLICANT_PATHS
+        linux.WPA_SUPPLICANT_PATHS = [conf]
+        result = ScanResult(platform="linux")
+        linux._try_wpa_supplicant(result)
+        linux.WPA_SUPPLICANT_PATHS = original
+        assert any(p.ssid == "CoffeeShop" and p.password == "latteplease"
+                   for p in result.profiles)
 
-    def test_no_generate_cmd_duplicate(self):
-        """v1.1.0 fix: 'generate-cmd' must not exist as a separate command."""
-        from gitdork.cli import main
-        assert "generate-cmd" not in main.commands
+    def test_open_network(self, tmp_path):
+        from wifi_passview.platforms import linux
+        conf = tmp_path / "wpa.conf"
+        conf.write_text('network={\n    ssid="OpenNet"\n    key_mgmt=NONE\n}\n')
+        original = linux.WPA_SUPPLICANT_PATHS
+        linux.WPA_SUPPLICANT_PATHS = [conf]
+        result = ScanResult(platform="linux")
+        linux._try_wpa_supplicant(result)
+        linux.WPA_SUPPLICANT_PATHS = original
+        guest = next(p for p in result.profiles if p.ssid == "OpenNet")
+        assert guest.password is None
+        assert guest.auth_type == "OPEN"
 
-    def test_list_categories_exists(self):
-        from gitdork.cli import main
-        assert "list-categories" in main.commands
+    def test_multiple_networks(self, tmp_path):
+        from wifi_passview.platforms import linux
+        conf = tmp_path / "wpa.conf"
+        conf.write_text(textwrap.dedent("""
+            network={ ssid="Net1" psk="pass1" }
+            network={ ssid="Net2" psk="pass2" }
+        """))
+        original = linux.WPA_SUPPLICANT_PATHS
+        linux.WPA_SUPPLICANT_PATHS = [conf]
+        result = ScanResult(platform="linux")
+        linux._try_wpa_supplicant(result)
+        linux.WPA_SUPPLICANT_PATHS = original
+        assert len(result.profiles) == 2
 
-    def test_list_engines_exists(self):
-        from gitdork.cli import main
-        assert "list-engines" in main.commands
+    def test_no_file_skipped(self):
+        from wifi_passview.platforms import linux
+        original = linux.WPA_SUPPLICANT_PATHS
+        linux.WPA_SUPPLICANT_PATHS = [Path("/nonexistent/wpa.conf")]
+        result = ScanResult(platform="linux")
+        linux._try_wpa_supplicant(result)
+        linux.WPA_SUPPLICANT_PATHS = original
+        assert len(result.profiles) == 0
 
 
-# ── JSON reporter ─────────────────────────────────────────────────────────────
+# ── Bug fix: PermissionError on iterdir ──────────────────────────────────────
+
+class TestPermissionErrorBugFix:
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod not supported on Windows")
+    def test_nm_iterdir_permission_error_adds_error(self, tmp_path):
+        """v1.1.0 fix: PermissionError on nm_dir.iterdir() must not crash."""
+        from wifi_passview.platforms import linux
+        nm_dir = tmp_path / "system-connections"
+        nm_dir.mkdir()
+        nm_dir.chmod(0o000)
+
+        original = linux.NM_PATHS
+        linux.NM_PATHS = [nm_dir]
+        result = ScanResult(platform="linux")
+        linux._try_networkmanager(result)
+        linux.NM_PATHS = original
+        nm_dir.chmod(0o755)  # restore
+
+        assert any("Permission denied" in e for e in result.errors)
+        assert len(result.profiles) == 0
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod not supported on Windows")
+    def test_nm_iterdir_permission_error_does_not_raise(self, tmp_path):
+        """Must not raise PermissionError — just adds to errors."""
+        from wifi_passview.platforms import linux
+        nm_dir = tmp_path / "system-connections"
+        nm_dir.mkdir()
+        nm_dir.chmod(0o000)
+
+        original = linux.NM_PATHS
+        linux.NM_PATHS = [nm_dir]
+        result = ScanResult(platform="linux")
+        try:
+            linux._try_networkmanager(result)
+        except PermissionError:
+            pytest.fail("PermissionError was not caught — v1.1.0 bug still present")
+        finally:
+            linux.NM_PATHS = original
+            nm_dir.chmod(0o755)
+
+    def test_nonexistent_nm_dir_skipped(self):
+        from wifi_passview.platforms import linux
+        original = linux.NM_PATHS
+        linux.NM_PATHS = [Path("/nonexistent/nm-connections")]
+        result = ScanResult(platform="linux")
+        linux._try_networkmanager(result)
+        linux.NM_PATHS = original
+        assert len(result.errors) == 0
+
+
+# ── Deduplication ─────────────────────────────────────────────────────────────
+
+class TestDeduplication:
+    def test_duplicate_ssids_deduped(self, tmp_path):
+        from wifi_passview.platforms import linux
+        conf1 = tmp_path / "a.nmconnection"
+        conf2 = tmp_path / "b.nmconnection"
+        for c in [conf1, conf2]:
+            c.write_text('[wifi]\nssid=SameNet\n[wifi-security]\npsk=pass\n')
+
+        original = linux.NM_PATHS
+        linux.NM_PATHS = [tmp_path]
+        result = linux.get_profiles()
+        linux.NM_PATHS = original
+
+        ssids = [p.ssid for p in result.profiles]
+        assert ssids.count("SameNet") == 1
+
+
+# ── Reporters ─────────────────────────────────────────────────────────────────
 
 class TestJSONReporter:
-    def test_structure(self):
-        from gitdork.reporters.json_report import to_dict
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        data = to_dict(r)
-        assert "target" in data
+    def _result(self):
+        return ScanResult(platform="linux", profiles=[
+            WifiProfile(ssid="Net1", password="pass1", auth_type="WPA-PSK"),
+            WifiProfile(ssid="Net2", password=None),
+        ])
+
+    def test_to_dict_structure(self):
+        from wifi_passview.reporters.json_report import to_dict
+        data = to_dict(self._result())
+        assert "platform" in data
         assert "summary" in data
-        assert "dorks" in data
-        assert data["summary"]["total"] == len(data["dorks"])
+        assert "profiles" in data
+        assert data["summary"]["total"] == 2
 
-    def test_dork_fields(self):
-        from gitdork.reporters.json_report import to_dict
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        d = to_dict(r)["dorks"][0]
-        for field in ("engine", "category", "description", "query", "url"):
-            assert field in d
+    def test_to_dict_with_password(self):
+        from wifi_passview.reporters.json_report import to_dict
+        data = to_dict(self._result())
+        assert data["summary"]["with_password"] == 1
 
-    def test_write_to_file(self, tmp_path):
-        import json
-        from gitdork.reporters.json_report import write
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        out = tmp_path / "dorks.json"
-        write(r, out)
-        assert out.exists()
-        assert json.loads(out.read_text())["summary"]["total"] > 0
-
-
-# ── Markdown reporter ─────────────────────────────────────────────────────────
-
-class TestMarkdownReporter:
-    def test_contains_target(self):
-        from gitdork.reporters.markdown import to_markdown
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        assert "example.com" in to_markdown(r)
-
-    def test_contains_engine_headers(self):
-        from gitdork.reporters.markdown import to_markdown
-        t = parse_target("example.com")
-        r = generate(t)
-        md = to_markdown(r)
-        assert "Google" in md
-        assert "Shodan" in md
-
-    def test_contains_queries(self):
-        from gitdork.reporters.markdown import to_markdown
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        assert "site:" in to_markdown(r)
+    def test_redact_in_json(self):
+        from wifi_passview.reporters.json_report import to_dict
+        data = to_dict(self._result(), redact=True)
+        p = next(p for p in data["profiles"] if p["ssid"] == "Net1")
+        assert p["password"] != "pass1"
+        assert p["password"] is not None
+        assert "*" in p["password"]
 
     def test_write_to_file(self, tmp_path):
-        from gitdork.reporters.markdown import write
-        t = parse_target("example.com")
-        r = generate(t, engines=[DorkEngine.GOOGLE])
-        out = tmp_path / "dorks.md"
-        write(r, out)
+        from wifi_passview.reporters.json_report import write
+        out = tmp_path / "out.json"
+        write(self._result(), out)
+        data = json.loads(out.read_text())
+        assert data["summary"]["total"] == 2
+
+
+class TestCSVReporter:
+    def _result(self):
+        return ScanResult(platform="linux", profiles=[
+            WifiProfile(ssid="Net1", password="pass1"),
+        ])
+
+    def test_csv_has_header(self):
+        from wifi_passview.reporters.csv_report import to_csv_string
+        csv = to_csv_string(self._result())
+        assert "ssid" in csv
+        assert "password" in csv
+
+    def test_csv_has_data(self):
+        from wifi_passview.reporters.csv_report import to_csv_string
+        csv = to_csv_string(self._result())
+        assert "Net1" in csv
+        assert "pass1" in csv
+
+    def test_csv_redact(self):
+        from wifi_passview.reporters.csv_report import to_csv_string
+        csv = to_csv_string(self._result(), redact=True)
+        assert "pass1" not in csv
+
+    def test_write_to_file(self, tmp_path):
+        from wifi_passview.reporters.csv_report import write
+        out = tmp_path / "out.csv"
+        write(self._result(), out)
         assert out.exists()
-        assert len(out.read_text()) > 100
+        assert "Net1" in out.read_text()
+
+
+# ── Platform dispatch ─────────────────────────────────────────────────────────
+
+class TestPlatformDispatch:
+    def test_unsupported_platform_returns_error(self, monkeypatch):
+        import sys
+        import wifi_passview.platforms as plat
+        monkeypatch.setattr(sys, "platform", "haiku")
+        result = plat.get_profiles()
+        assert len(result.errors) > 0
+        assert "Unsupported" in result.errors[0]
